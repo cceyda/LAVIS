@@ -62,6 +62,10 @@ class BlipVQA(BlipBase):
                    The shape of the tensor is (sum(n_answers),)
                 - n_answers (torch.Tensor): A tensor shape (batch_size,) containing the number of answers
                      for each question in the batch.
+                - same_image (bool): Whether to use the same image for all questions in the batch.
+                    If True, the image will be processed only once, and the same image features will be used for all questions.
+                    If False, the image will be processed for each question in the batch.
+                    Default: False.
 
         Returns:
             A BlipOutput object containing loss and intermediate outputs,
@@ -103,6 +107,7 @@ class BlipVQA(BlipBase):
 
     def forward_encoder(self, samples):
         questions = samples["text_input"]
+        batch_size = len(questions)
         questions = self.tokenizer(
             questions,
             padding="longest",
@@ -114,6 +119,9 @@ class BlipVQA(BlipBase):
         samples.update({"tokenized_text": questions})
 
         image_embeds = self.visual_encoder.forward_features(samples["image"])
+        
+        if samples.get("same_image", False):
+            image_embeds = image_embeds.repeat_interleave(batch_size, dim=0)
         encoder_output = self.text_encoder.forward_automask(
             tokenized_text=samples["tokenized_text"], visual_embeds=image_embeds
         )
@@ -153,7 +161,7 @@ class BlipVQA(BlipBase):
         )
 
         loss = samples["weight"] * answer_output.loss
-        bsz = samples["image"].size(0)
+        bsz = len(samples["text_input"])
 
         loss = loss.sum() / bsz
 
@@ -175,7 +183,11 @@ class BlipVQA(BlipBase):
             samples (dict): A dictionary containing the following keys:
                 - image (torch.Tensor): A tensor of shape (batch_size, 3, H, W). Default H=480, W=480.
                 - text_input (str or [str]): String or a list of strings, each string is a question.
-                                             The number of questions must be equal to the batch size. If a single string, will be converted to a list of string, with length 1 first.
+                                             The number of questions must be equal to the batch size unless same_image=True. If a single string, will be converted to a list of string, with length 1 first.
+                - same_image (optional bool): Whether to use the same image for all questions in the batch.
+                    If True, the image should batch_size=1. Image will be processed only once, and the same image features will be used for all questions.
+                    If False, the image will be processed for each question in the batch.
+                    Default: False.
             num_beams (int): Number of beams for beam search. 1 means no beam search.
             inference_method (str): Inference method. One of "rank", "generate".
                 - If "rank", the model will return answers with the highest probability from the answer list.
@@ -217,7 +229,10 @@ class BlipVQA(BlipBase):
         if isinstance(samples["text_input"], str):
             samples["text_input"] = [samples["text_input"]]
 
-        assert len(samples["text_input"]) == samples["image"].size(
+        if samples.get("same_image", False):
+            assert (samples["image"].shape[0] == 1), "Just one image is supported when same_image=True."
+        else:
+            assert len(samples["text_input"]) == samples["image"].size(
             0
         ), "The number of questions must be equal to the batch size."
 
@@ -251,7 +266,7 @@ class BlipVQA(BlipBase):
             "encoder_attention_mask": question_atts,
         }
 
-        bsz = samples["image"].size(0)
+        bsz = len(samples["text_input"])
         bos_ids = torch.full(
             (bsz, 1), fill_value=self.tokenizer.bos_token_id, device=self.device
         )
