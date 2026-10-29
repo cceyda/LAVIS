@@ -257,8 +257,9 @@ class BlipVQA(BlipBase):
         question_states = question_output.last_hidden_state.repeat_interleave(
             num_beams, dim=0
         )
-        question_atts = torch.ones(question_states.size()[:-1], dtype=torch.long).to(
-            self.device
+        # mask question padding (as in forward), otherwise batched short questions attend to pad tokens
+        question_atts = samples["tokenized_text"].attention_mask.repeat_interleave(
+            num_beams, dim=0
         )
 
         model_kwargs = {
